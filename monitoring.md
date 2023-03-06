@@ -46,6 +46,8 @@ Ceph Dashboard je v provozu, a můžeme se přihlásit v prohlížeči a začít
 
     http://172.27.175.23:8080
 
+![](ceph-dashboard.png)
+
 Při změně provozních parametrů Ceph Dashboard je vždy nutné provést restart modulu pomocí disable/enable, tak aby se nové parametry aplikovaly
 
 #. Restart modulu Ceph Dashboard
@@ -53,170 +55,177 @@ Při změně provozních parametrů Ceph Dashboard je vždy nutné provést rest
     ceph mgr module disable dashboard
     ceph mgr module enable dashboard
 
+
 ## Instalace Prometheus
 
-Monitorovací software Prometheus nainstalujeme na oddělený virtuální server, který bude mít přístup na IP serverů v Ceph clusteru a provádět vzdálený sběr dat a monitoring. Pro instalaci se předpokládají distribuční balíky systému Debian/Ubuntu, a to konkrétně Ubuntu 22.04 LTS Jammy, který obsahuje již moderní verzi systému Prometheus 2.31, není tak nutné provádět manuální instalaci ze zdrojů.
+Monitorovací software Prometheus je ideální instalovat na oddělený virtuální server, který bude mít přístup na IP serverů v Ceph clusteru a provádět vzdálený sběr dat a monitoring. Pro instalaci se předpokládají distribuční balíky systému Debian/Ubuntu, a to konkrétně Ubuntu 22.04 LTS Jammy, který obsahuje již moderní verzi systému Prometheus 2.31, není tak nutné provádět manuální instalaci ze zdrojů.
 
+#. Instalace balíků prometheus
 
+    sudo apt-get install prometheus
 
+#. Ověření, že Prometheus běží a poslouchá na HTTP portu
 
+    netstat -lpn | grep prometheus
 
-.``RBD`` používá pro uložení blokových zařízení ``RADOS`` pool. Je možné použití více poolů pro více oddělených skupin blokových zařízení, například dle typů hardware. Pro uložení blokových zařízení doporučujeme použití nejvýkonnějších disků NVME či SSD, bloková zařízení jako virtuální servery potřebují v náročných aplikacích jako databáze nejvyšší možný výkon IOPS. Optimalizace IOPS pro ``RBD`` zařízení je nejčastějším důvodem pro výkonovou optimalizaci Ceph clusteru
+    tcp6       0      0 :::9090                 :::*                    LISTEN      10649/prometheus
 
-## Instalace ``RBD``
+Prometheus je nainstalován. Nyní je možné navštívit webový UI
 
-Bloková zařízení ``RBD`` nepotřebují ke své funkci žádný  specifický komponent, potřebujeme pouze běžící Ceph cluster.
+#. Otevření URL Prometheus v prohlížeči
 
-## Konfigurace ``RBD``
+    http://172.27.175.112:9090
 
-#. Vytvoření poolu pro ``RBD``
+![](prometheus-home.png)
 
-    ceph osd pool create rbd 128
+##. Konfigurace Prometheus
 
-#. Aplikační povolení ``RBD`` pro nový pool
+Aby bylo možné zahájit sběr dat z Cephu, je nutné na všech ceph nodech, kde běží ceph-mgr, povolit sběr dat z prometheus modulu
 
-    ceph osd pool application enable rbd rbd
+#. Povolení modulu prometheus na všech nodech, kde běží ceph-mgr
 
-#. Inicializace ``RBD`` poolu
+    ceph mgr module enable prometheus
 
-    rbd pool init rbd
+Daemon ceph-mgr automaticky pustí prometheus modul a exporter na portu 9283
 
-## Autentifikace ``RBD``
+#. Oveření Prometheus exporteru na všech nodech s ceph-mgr
 
-Ve výchozím nastavení používá příkaz ``rbd`` uživatele admin. Pro přístup klientů, například hypervisorů Openstack je vhodné vytvořit klientské účty
+    netstat -lpn | grep 9283
 
-#. Vytvoření uživatele openstack který má rw přístup do poolu rbd a r přístup do poolu images
+    tcp6       0      0 :::9283                 :::*                    LISTEN      3562877/ceph-mgr
 
-    ceph-authtool -C /etc/ceph/ceph.client.rbd.keyring -n client.rbd --cap osd 'allow class-read object_prefix rbd_children, allow rwx pool=volumes, allow rx pool=images' --cap mon 'allow r, allow command "osd blacklist"'
+Pro kompletní sběr všech informací je dále nutné na všechny ostatní Ceph servery nainstalovat i prometheus-node-exporter, který zajistí sběr systémových dat jako vytížení CPU či disků, které dále využijeme při analýze výkonu v grafech a které využívají i oficiální grafana šablony
 
-    ceph auth add client.rbd -i /etc/ceph/ceph.client.rbd.keyring
+#. Instalace  prometheus-node-exporter na všech serverech s komponenty Ceph
 
-## Základní práce s blokovými zařízeními ``RBD`` (dále jen ``image``)
+    sudo apt-get install prometheus-node-exporter
 
-#. Vytvoření ``image`` myimage s velikostí 1GB v základním poolu rbd
+Nyní je Ceph cluster připraven na sběr dat a je možné nakonfigurovat Prometheus, aby tyto data sbíral. Konfiguraci provedeme přidáním setů pro modul ceph pomocí sekce scrape_cofigs v /etc/prometheus/prometheus.yaml. Je vhodné, aby fungovalo DNS a mohli jsme používat buď FQDN a nebo hostname, tak aby byla potom data v dashboardech čitelná. Konfigurační soubor můžeme též plnit pomocí service discovery a konfiguračního managementu pomocí tagů automaticky. 
 
-    rbd create --size 1024 myimage
+#. Přidání serverů s ceph-mgr a modulem prometheus do /etc/prometheus/prometheus.yaml
 
-#. Vylistování ``image`` v základním poolu rbd
+    scrape_configs:
 
-    rbd ls
+        - job_name: ceph
+        # ceph-mgr module
+            static_configs:
+            - targets: ['ceph1:9283','ceph2:9283','ceph3:9283']
 
-#. Informace o ``image`` myimage
+Rovněž přidáme novou sekci pro sběr systémových dat z prometheus-node-exporter ze všech serverů s Ceph
 
-    rbd info myimage
+#. Přidání všech serverů v Ceph s prometheus-node-exporter pro sběr systémových statistik
 
-#. Zvýšení velkosti ``image`` myimage na 2 GB
 
-    rbd resize --size 2048 myimage
+    scrape_configs:
 
-#. Snížení velkosti ``image`` myimage na 1 GB
+        - job_name: ceph-node-exporter
+        # ceph s prometheus-node-exporter
+            static_configs:
+            - targets: ['ceph1:9100','ceph2:9100','ceph3:9100']
 
-    rbd resize --size 1048 myimage --allow-shrink
+Po přidání všech serverů pro sběr dat je nutné provést restart prometheus
 
-#. Odstranění ``image`` myimage
+#. Restart daemonu prometheus
 
-    rbd rm myimage
+    systemctl restart prometheus
 
-## Základní práce s ``RBD`` snapshoty
+Prometheus nyní sbírá všechna potřebná data. Provedeme kontrolu přes dashboard v záložce Status/Targets, že se data načítají
 
-Snapshot je logická kopie read-only zdrojového RBD image v určitém čase, kdy byl snapshot vytvořen. Díky tomu můžeme vytvářet snapshoty images, které si zachovávají status v historii změn. Ceph podporuje vrstvení snapshotů, díky kterým můžeme klonovat nové images pomocí algoritmu Copy-On-Write, což znamená maximální úsporu času a místa na disku
+![](prometheus-targets.png)
 
-#. Vytvoření snapshotu ``image``
+Sběr dat z Ceph clusteru je plnně funkční, nyní je třeba nainstalovat Grafanu pro vizualizaci dat
 
-    rbd snap create myimage@mysnap
+## Instalace Grafany
 
-#. Vylistování snapshotů ``image``
+Grafovací software Grafana doporučujeme instalovat na stejný oddělený virtuální server jako Prometheus, je komplementem monitorovacího řešení pro Ceph. Pro instalaci Grafany využijeme repozitáře vývojářů, aktualizace jsou zde rapidní a otevřeme si tak cestu k bezproblémovému update.
 
-    rbd snap ls myimage
+#. Instalace repository a Grafany
 
-#. Rollback shapshotu, přepíše aktuální obsah ``image`` obsahem snapshotu
+    sudo apt-get install -y apt-transport-https software-properties-common wget
+    sudo wget -q -O /usr/share/keyrings/grafana.key https://apt.grafana.com/gpg.key
+    echo "deb [signed-by=/usr/share/keyrings/grafana.key] https://apt.grafana.com stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
+    sudo apt-get update
+    sudo apt-get install grafana
 
-    rbd snap rollback myimage@mysnap
+Balík Grafana z neznámého důvodu nespouští grafana-server automaticky, je třeba výslovně vynutit
 
-#. Smazání snapshotu ``image``
+#. Automatický start Grafany po spuštění a okamžitý start
 
-    rbd snap rm myimage@mysnap
+    sudo systemctl daemon-reload
+    sudo systemctl enable grafana-server
+    sudo systemctl start grafana-server
 
-#. Smazání všech snapshotů ``image``
+Pro správnou funkci všech předdefinovaných dashboardů je třeba nainstalovat Grafana pluginy
 
-    rbd snap purge myimage
+#. Instalace Grafana pluginů vonage-status-panel a grafana-piechart-panel
 
-## Vrstvení a klonování v ``RBD``
+    grafana-cli plugins install vonage-status-panel
+    grafana-cli plugins install grafana-piechart-panel
 
-Vrstvení a klonování je jednoduchý proces. Ze zdrojové ``image`` se vytvoří snapshot, zapne se jeho ochrana, a poté vytvoříme jeho klon, který se opět stane zapisovatelným image. Výhoda je, že nové image používá algoritmus ``Copy-On-Write``, takže například nově naklované image operačního systému nebude zabírat žádné místo navíc
+## Konfigurace Grafany
 
-#. Vytvoření snapshotu ``image``
+Pro přístup z Ceph Dashboard je třeba dále povolit volby pro anonymní přístup a embedding Grafany v /etc/grafana/grafana.ini
 
-    rbd snap create myimage@mysnap
+#. Povolení anonymního přístupu v /etc/grafana/grafana.ini
 
-#. Ochrana snapshotu, po zapnutí ochrany jej nejde smazat
+    [auth.anonymous]
+    enabled = true
+    org_name = Main Org.
+    org_role = Viewer
 
-    rbd snap protect myimage@mysnap
+#. Povolení embedded Grafany v /etc/grafana/grafana.ini
 
-#. Vypnutí ochrany snapshotu, aby jej šlo smazat. Pokud ze snapshotu vznikly klony, je třeba nejdříve klony smazat, či provést jejich sloučení pomocí flatten
+    [security]
+    allow_embedding = true
 
-    rbd snap unprotect myimage@mysnap
-
-#. Klonování snapshotu. Vznikne nový ``image``, jehož velikost bude nulová a stávající obsah se bude odkazovat na zdrojový snapshot
-
-    rbd clone myimage@mysnap myclone
-
-#. Výpis klonů snapshotu
-
-    rbd children myimage@mysnap
-
-#. Sloučení klonů pomocí flatten. Při sloučení naroste velikost klonu, část která byla referencí původního snapshotu se přidá k stávajícímu ``image`` a to se oddělí od zdrojového snapshotu
-
-    rbd flatten myclone
-
-## Klientský přístup
-
-Klienti, například hypervisory ``Openstack`` potřebují k připojení k ``RBD`` základní instalaci klientských knihoven, konfigurační soubor a klíč
-
-#. Instalace klientských knihoven
-
-    cephadm install ceph-common
-
-#. Vytvoření konfiguračního souboru ``/etc/ceph/ceph.conf``
-
-      [global]
-      fsid = 204274b9-b388-4b61-a825-3663c84d87b8
-      osd_pool_default_pg_num = 64
-      osd_pool_default_pgp_num = 64
-      osd_pool_default_size = 2
-      mon_osd_full_ratio = 0.96
-      mon_osd_nearfull_ratio = 0.9
-      mon_initial_members = mon1,mon2,mon3
-      mon_host = 172.27.102.1,172.27.102.2,172.27.102.3
-      cluster_network = 172.26.122.0/24
-      public_network = 172.27.100.0/22
-      auth_cluster_required = cephx
-      auth_service_required = cephx
-      auth_client_required = cephx
-      auth_supported = cephx
-      osd_pool_default_flag_hashpspool = true
-      osd_op_threads = 6
-      osd_op_num_threads_per_shard = 2
-      osd_op_num_shards = 24
-      filestore_fd_cache_size = 128
-      filestore_fd_cache_shards = 32
-      filestore_xattr_use_omap = true
-      filestore_queue_max_ops = 100000
-      filestore_queue_max_bytes = 1048576000
-      ms_nocrc = true
-      ms_dispatch_throttle_bytes = 0
-      cephx_sign_messages = false
-      cephx_require_signatures = false
-      throttler_perf_counter = false
-      mon_pg_warn_max_per_osd = 8192
-      mon_compact_on_start = true
-      mon_max_pg_per_osd = 5000
-      osd_max_pg_per_osd_hard_ratio = 10
-      mon_osd_backfillfull_ratio = 0.93
-      auth_allow_insecure_global_id_reclaim = false
-      auth_expose_insecure_global_id_reclaim = false
-
-#. Připojení blokového zařízení myimage na klientský systém
-
-    rbd map --pool rbd myimage --id admin
+Po dokončení konfiguračních změn je třeba provést restart grafana-server
+
+#. Restart daemonu grafana-server
+
+    systemctl restart grafana-server
+
+Po dokončení konfigurace Grafana běží na portu 3000
+
+#. Oveření funkce daemonu Grafany na portu 3000
+
+    netstat -lpn | grep grafana
+
+    tcp6       0      0 :::3000                 :::*                    LISTEN      11735/grafana
+
+Grafana je nainstalována a nakonfigurována. Nyní je možné navštívit webový UI
+
+#. Otevření URL Grafany v prohlížeči
+
+    http://172.27.175.112:3000
+
+![](grafana-home.png)
+
+Nyní je třeba přidat datový zdroj Prometheus, aby Grafana mohla vizualizovat data. Datový zdroj přidáme v Settings/Data
+ Sources, typ je Prometheus a adresa je lokální adresa Prometheus serveru http://172.27.175.112:9090. Datový zdroj je nutné pojmenovat Dashboard1, aby byla zachována kompatibita s Ceph Dashboard
+
+ #. Přidání datového zdroje Prometheus na adrese http://172.27.175.112:9090 s názvem Dashboard1
+
+ ![](grafana-datasource.png)
+
+Grafana je připravena zobrazit vizualizaci dat z Cephu. Pro základní vizualizaci dat použijeme předpřipravené dashboardy od vývojářů Cephu, které se zobrazují z Ceph Dashboard. Zdrojové soubory dashboardů je možné stáhout z git repozitářů Cephu
+
+#. Stažení Grafana dashboardů z git repozitářů Cephu
+
+    https://github.com/ceph/ceph/tree/main/monitoring/ceph-mixin/dashboards_out
+
+Jednotlivé JSON soubory je nutné importovat lokálně z browseru přes dashboard přes záložku Dashboards/Import. Po dokončení importu budou dashboards dostupné v hlavním seznamu Dashboards
+
+#. Zobrazení seznamu importovaných dashboards
+
+ ![](grafana-dashboards.png)
+
+Po dokončení importu všech souborů je možné zobrazit veškeré dostupné grafy z diagnostiky Cephu
+
+#. Zobrazení informací z dashboardu Ceph - Cluster
+
+![](grafana-dashboard-cluster.png)
+
+Instalace Grafany a vizualizace Ceph clusteru je nyní kompletní.
+
+
 
