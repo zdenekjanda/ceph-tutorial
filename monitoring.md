@@ -227,5 +227,128 @@ Po dokončení importu všech souborů je možné zobrazit veškeré dostupné g
 
 Instalace Grafany a vizualizace Ceph clusteru je nyní kompletní.
 
+## Alerty
+
+Pro provoz Ceph clusteru je nutné sledovat aktuální stav a kritické hodnoty, a při jejich překročení upozornit administrátora, aby vzniklý problém řešil. Alerty je možné nastavit v systému Prometheus, případně využít Zabbix modul
+
+## Zabbix modul
+
+Zabbix modul je součástí ceph-mgr daemonu a slouží k odesílání notifikací na zabbix server
+
+### Instalace Zabbix modulu
+
+Pro základní funkci ceph-mgr modulu zabbix je nutné na všech serverech s ceph-mgr nainstalovat balík zabbix-agent
+
+#. Instalace balíku zabbix-agent
+
+    sudo apt-get install zabbix-agent
+
+### Konfigurace Zabbix modulu
+
+#. Spuštění Zabbix modulu
+
+    ceph mgr module enable zabbix
+
+#. Parametry Zabbix modulu
+
+* zabbix_host (nutné nastavit)
+* identifier (default ceph-fsid)
+* zabbix_port (default 10051)
+* zabbix_sender (default /usr/bin/zabbix_sender)
+* interval (default 60)
+* discovery_interval (default 100)
+
+#. Nastavení parametrů Zabbix modulu
+
+    ceph zabbix config-set zabbix_host zabbix.mydomain.com
+    ceph zabbix config-set identifier ceph1.mydomain.com
+
+#. Zobrazení konfigurace Zabbix modulu
+
+    ceph zabbix config-show
+
+#. Okamžité odeslání dat mimo interval
+
+    ceph zabbix send
+
+### Debug Zabbix modulu
+
+Pro debugging zabbix modulu je nutné nastavit nejvyšší logovací úroveň pro ceph-mgr v konfiguračním souboru /etc/ceph/ceph.conf a provést jeho restart, zabbix modul bude potom zapisovat veškeré akce do logu
+
+#. Nastavení logování ceph-mgr v /etc/ceph/ceph.conf
+
+    [mgr]
+        debug mgr = 20
+
+## Co sledovat monitoringem
+
+### Ceph healh
+
+Zdraví clusteru je nejběžnější metrikou, kterou je třeba sledovat. Všeobecně platí že cluster by měl vždy být v statusu health_ok
+
+    ceph -s
+
+        cluster:
+        id:     c27847a7-f614-4bfc-a416-4349da39c264
+        health: HEALTH_OK
+
+Hodnoty health HEALTH_WARN a HEALTH_CRITICAL vyžadují zásah administrátora
+
+### Latence OSD
+
+Latence OSD je kritickým ukazatelem výkonu. Je součástí základního Ceph dashboardu a všeobecně platí, že u NVME disků by neměla přesáhnout násobky desítek ms. Latence ve stovkách ms značí problémový či přetížený disk a může negativně ovlivnit výkon například virtálních serverů, které zde mají své systémové disky. Latence nad 1000ms už je naprosto kritická a vede k selhání serverů.
+
+#. Ukázka typické latence správně fungujícího NVME Cephu v Dashboardu Ceph Detail / OSD State
+
+![](ceph-osd-latency.png)
+
+#. Výpis aktuální latence <osd>
+
+    ceph osd perf
+
+    osd  commit_latency(ms)  apply_latency(ms)
+    10                 6                  6
+    9                   9                  9
+    8                   8                  8
+    7                   7                  7
+    6                   2                  2
+    5                   4                  4
+    4                   8                  8
+    3                  13                 13
+    2                   3                  3
+    1                   4                  4
+    0                   2                  2
+
+### Dostupné místo na Cephu
+
+Pro správnou funkci Cephu a bezpečný provoz je třeba dodržovat maximální obsazení Cephu tak, aby i při selhání jednoho celého serveru, případně failure zóny v CRUSH mapě bylo možné cluster obnovit do stavu, kdy je stále možné dosáhnout vysoké dostupnosti. Pokud máme 4 servery s OSD a stejným počtem disků, mělo by být vždy volné minimálně 1/4 kapacitz plus 10% celkové kapacity. Při selhání jednotlivého serveru tak bude možné všechny data pomocí recovery automaticky přenést na servery zbývající a stále bude dostupné 10% volného místa pro další bezpečný provoz, než bude vráceno selhané hardware do provozu. Dále platí, že při typickém provozu by se nemělo dlouhodobě přesahovat 90% volného místa na jednotlivých OSD. Při překročení více jak 97% místa se cluster přepne do read-only stavu a je možné řešit pouze rozšířením místa, toto je situace do které se nechceme v žádném případě dostat
+
+#. Zobrazení statistik místa na jednotlivých OSD
+
+    ceph osd df
+
+    ID   CLASS  WEIGHT   REWEIGHT  SIZE     RAW USE  DATA     OMAP     META     AVAIL    %USE   VAR   PGS  STATUS
+    0    ssd  0.38519   1.00000  394 GiB  215 GiB  187 GiB  379 MiB   27 GiB  180 GiB  54.39  1.03  177      up
+    1    ssd  0.38519   1.00000  394 GiB  210 GiB  183 GiB  368 MiB   26 GiB  185 GiB  53.15  1.01  173      up
+    2    ssd  0.38519   1.00000  394 GiB  211 GiB  188 GiB  397 MiB   15 GiB  184 GiB  53.43  1.01  177      up
+    3    ssd  0.38519   1.00000  394 GiB  208 GiB  183 GiB  396 MiB  6.7 GiB  186 GiB  52.77  1.00  173      up
+    4    ssd  0.38519   1.00000  394 GiB  206 GiB  181 GiB  391 MiB  3.7 GiB  189 GiB  52.13  0.99  171      up
+    5    ssd  0.38519   1.00000  394 GiB  210 GiB  183 GiB  366 MiB   27 GiB  184 GiB  53.30  1.01  173      up
+    6    ssd  0.38519   1.00000  394 GiB  206 GiB  181 GiB  351 MiB   24 GiB  188 GiB  52.22  0.99  171      up
+    7    ssd  0.38519   1.00000  394 GiB  210 GiB  187 GiB  360 MiB   17 GiB  185 GiB  53.14  1.01  177      up
+    8    ssd  0.38519   1.00000  394 GiB  211 GiB  184 GiB  349 MiB   26 GiB  183 GiB  53.49  1.02  174      up
+    9    ssd  0.38519   1.00000  394 GiB  212 GiB  184 GiB  363 MiB   18 GiB  183 GiB  53.71  1.02  175      up
+    10    ssd  0.38519   1.00000  394 GiB  207 GiB  184 GiB  364 MiB  9.9 GiB  188 GiB  52.36  0.99  173      up
+
+#. Zobrazení celkového obsazení clusteru
+
+    ceph -s
+
+    data:
+    pools:   3 pools, 16641 pgs
+    objects: 19.39M objects, 18 TiB
+    usage:   39 TiB used, 35 TiB / 74 TiB avail
+    pgs:     16641 active+clean
 
 
+Výše uvedené hodnoty jsou základními ukazateli pro bezpečný provoz, monitoring proto nastavíme na jejich sledování, ať už pomocí zabbix serveru, Prometheus alertů či zpracováním výstupu Ceph cli v příkazové řádce. 
