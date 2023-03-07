@@ -12,6 +12,6 @@ Tento tutorial slouží pro kompletní školení instalace, administrace, monito
 
 Část V. - [Monitoring](./monitoring.md)
 
-
+Část VI. - [Administrace](./administrace.md)
 
 
