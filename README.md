@@ -14,4 +14,6 @@ Tento tutorial slouží pro kompletní školení instalace, administrace, monito
 
 Část VI. - [Administrace](./administrace.md)
 
+Část VI. - [Tuning](./tuning.md)
+
 
