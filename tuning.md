@@ -49,9 +49,60 @@ Baseline výkon RBD image v 16 jobech je 75k IOPS
 
 ### Nastavení výkonu CPU
 
-#. Nastavení C6
+Pro nejlepší latenci je nutné nastavit konstantní maximální výkon CPU. Zajistí tak zpracování CEPH požadavků s nejnižší latencí, a dosáhneme tak vyššího výkonu IOPS 
 
-#. Nastavení governoru performance 
+#### Nastavení hardware v BIOS
+
+#. Povolení všech jader
+
+    Advanced >> CPU Configuration >> Core enabled >> “0”
+
+#. Nastavení power managementu
+
+    Advanced >> CPU Configuration >> Advanced Power Management
+
+Následující musí být nastaveno
+
+    Power Technology >> Custom
+    Energy performance Tuning >> disable
+    Energy performance BIAS setting >> performance
+    Energy efficient turbo >> disable
+
+#. Nastavení pokročilého power managementu
+
+    Advanced >> CPU Configuration >> Advanced Power Management >> CPU P state control
+
+Následující musí být nastaveno
+
+    EIST (P-States) >> Enable
+    Turbo mode >> enable
+    P-state coordination >> HW_ALL
+
+#. Nastavení CX stavů CPU
+
+    Advanced >> CPU Configuration >> Advanced Power Management >> CPU C state control
+    
+Následující musí být nastaveno
+
+    Package C-state limit >> C0/C1 state
+    CPU C3 Report >>disable
+    CPU C6 report >> enable
+    Enhanced Halt state >> disable
+
+Po aplikaci a novém rebootu je BIOS hardware nastaven pro maximální výkon CPU
+
+#### Nastavení governoru performance
+
+Systém Linux je dálen nutné nastavit pro governor performance
+
+#. Jednorázové nastavení governoru performance
+
+    apt install linux-tools-common linux-tools-5.13.cpupower frequency-info
+    cpupower frequency-set -g performance
+
+#. Nastavení governoru performance po rebootu v /etc/rc.local
+
+    cpupower frequency-set -g performance
 
 ### Kernel parametry
 
@@ -93,11 +144,50 @@ Baseline výkon RBD image v 16 jobech je 75k IOPS
 
 ### IPtables
 
-#. Zákaz conntrack kernelových modulů
+Pro nejniží latenci zablokujeme nepotřebné moduly iptables, například notorický conntrack který zvyšuje síťovou latenci. Nastavení omezuje funkce iptables a znemožňuje provoz kontejnerů, je třeba použít jen v případě manuální instalace cephu která není v kontejnerech
+
+#. Zákaz conntrack kernelových modulů v ``/etc/modprobe.d/blacklist-conntrack.conf``
+
+    blacklist nf_conntrack_ipv4
+    install nf_conntrack_ipv4 /bin/false
+    blacklist nf_defrag_ipv4
+    install nf_defrag_ipv4 /bin/false
+    blacklist nf_conntrack
+    install nf_conntrack /bin/false
+    blacklist x_tables
+    install x_tables /bin/false
+    blacklist xt_comment
+    install xt_comment /bin/false
+    blacklist xt_conntrack
+    install xt_conntrack /bin/false
+    blacklist ip6_tables
+    install ip6_tables /bin/false
+    blacklist ip6table_filter
+    install ip6table_filter /bin/false
+    blacklist ip_tables
+    install ip_tables /bin/false
+    blacklist iptable_filter
+    install iptable_filter /bin/false
+
+Po nastavení je třeba provést reboot systému.
 
 ## Debugging výkonu
 
 ### perf
 
+Pro zjištění výkonu jednotlivých komponentů ceph a dalších procesů můžeme použít balík perf. Umožní nám vytvoření grafů s časovou osou, kde je stráveno nejvíce času zpracováním systémových volání, můžeme tak zjistit na co proces čeká a kde hledat optimalizaci výkonu
+
+#. Zjištení PID sledovaného procesu
+
+    ps -Af | grep osd
+
+    ceph        1611       1  2 Feb09 ?        16:25:02 /usr/bin/ceph-osd -f --cluster ceph --id 1 --setuser ceph --setgroup ceph
+
+#. Spuštění perf
+
+    perf record -F 299 -p 1611 -g -- sleep 300
 
 
+#. Vizualizace dat perf
+
+![](osd.svg)
